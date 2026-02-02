@@ -1,179 +1,118 @@
 package com.magnum.shop;
 
-import org.springframework.boot.CommandLineRunner;
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-import java.util.List;
-import java.util.Optional;
-import java.util.Scanner;
+import java.util.*;
 
-@SpringBootApplication
-public class ShopApplication implements CommandLineRunner {
+public class ShopApplication {
+    // Session state
+    private static User currentUser = null;
+    private static final Scanner sc = new Scanner(System.in);
 
-    private final ProductRepository productRepository;
-    private final CategoryRepository categoryRepository;
-
-    public ShopApplication(ProductRepository productRepository, CategoryRepository categoryRepository) {
-        this.productRepository = productRepository;
-        this.categoryRepository = categoryRepository;
-    }
+    // DAOs via Factory
+    private static final ProductDAO productDAO = DAOFactory.getProductDAO();
+    private static final OrderDAO orderDAO = DAOFactory.getOrderDAO();
+    private static final UserDAO userDAO = DAOFactory.getUserDAO();
 
     public static void main(String[] args) {
-        SpringApplication.run(ShopApplication.class, args);
-    }
-
-    @Override
-    public void run(String... args) throws Exception {
-        Scanner sc = new Scanner(System.in);
-        System.out.println("\n👋 Welcome to the Magnum Console Shop (Main App)!");
+        System.out.println("👋 Welcome to Shop v2.0 (Solid, Patterns, Secure)");
 
         while (true) {
-            System.out.println("\n--- MAIN MENU ---");
-            System.out.println("1. Show all products");
-            System.out.println("2. Show products by Category");
-            System.out.println("3. Buy product (Smart Checkout)");
-            System.out.println("4. Exit");
-            System.out.print("Enter your choice: ");
-
-            String choice = sc.nextLine();
-
-            if (choice.equals("1")) {
-                showAllProducts();
-            } else if (choice.equals("2")) {
-                showByCategory(sc);
-            } else if (choice.equals("3")) {
-                buyProduct(sc);
-            } else if (choice.equals("4")) {
-                System.out.println("Goodbye!");
-                System.exit(0);
+            if (currentUser == null) {
+                loginMenu();
             } else {
-                System.out.println("Invalid option, please try again.");
+                mainMenu();
             }
         }
     }
 
-    // --- 1. SHOW ALL ---
-    private void showAllProducts() {
-        List<Product> products = productRepository.findAll();
-        printProductList(products, "All Products");
+    private static void loginMenu() {
+        System.out.println("\n--- LOGIN ---");
+        System.out.print("Username: ");
+        String user = sc.nextLine();
+        System.out.print("Password: ");
+        String pass = sc.nextLine();
+
+        userDAO.login(user, pass).ifPresentOrElse(
+                (u) -> {
+                    currentUser = u;
+                    System.out.println("✅ Login successful! Welcome " + u.getUsername());
+                },
+                () -> System.out.println("❌ Invalid credentials") // Lambda
+        );
     }
 
-    // --- 2. SHOW BY CATEGORY ---
-    private void showByCategory(Scanner sc) {
-        System.out.println("\n📂 SELECT A CATEGORY:");
-        printCategoryList();
+    private static void mainMenu() {
+        System.out.println("\n--- MAIN MENU (" + currentUser.getUsername() + ") ---");
+        System.out.println("1. List Products");
+        System.out.println("2. Buy Product");
 
-        System.out.print("Enter Category ID: ");
+        // Secured Endpoint: Only Admin sees this
+        if (currentUser.isAdmin()) {
+            System.out.println("3. [ADMIN] View Order Details");
+        }
+
+        System.out.println("4. Logout");
+        System.out.print("Choice: ");
+
+        String choice = sc.nextLine();
+
         try {
-            Long catId = Long.parseLong(sc.nextLine());
-            List<Product> products = productRepository.findByCategoryId(catId);
-
-            if (products.isEmpty()) {
-                System.out.println("⚠️ This category is empty or does not exist.");
-            } else {
-                String categoryName = products.get(0).getCategory().getName();
-                printProductList(products, categoryName + " Section");
+            switch (choice) {
+                case "1" -> listProducts(); // Lambda-style switch (Java 14+)
+                case "2" -> buyProduct();
+                case "3" -> {
+                    if (currentUser.isAdmin()) viewOrderDetails();
+                    else System.out.println("⛔ Access Denied.");
+                }
+                case "4" -> currentUser = null;
+                default -> System.out.println("Invalid option");
             }
         } catch (Exception e) {
-            System.out.println("❌ Invalid input.");
+            System.out.println("Error: " + e.getMessage());
         }
     }
 
-    // --- 3. BUY PRODUCT (SMART CHECKOUT) ---
-    private void buyProduct(Scanner sc) {
-        System.out.println("\n💳 --- CHECKOUT START ---");
+    private static void listProducts() throws Exception {
+        // Lambda Usage: forEach
+        productDAO.findAll().forEach(p ->
+                System.out.printf("%d. %s - $%.2f (Stock: %d)\n", p.getId(), p.getName(), p.getPrice(), p.getQuantity())
+        );
+    }
 
-        // Step 1: Show Categories
-        System.out.println("📂 SELECT A CATEGORY:");
-        printCategoryList();
+    private static void buyProduct() throws Exception {
+        System.out.print("Enter Product ID: ");
+        // Data Validation: Parse Long
+        long pid;
+        try { pid = Long.parseLong(sc.nextLine()); } catch (Exception e) { System.out.println("Invalid ID"); return; }
 
-        System.out.print("Select Category ID (or 0 to exit): ");
-        try {
-            Long catId = Long.parseLong(sc.nextLine());
-            if (catId == 0) return; // User cancelled
+        Optional<Product> pOpt = productDAO.findById(pid);
 
-            // Step 2: Show Products in that category
-            List<Product> products = productRepository.findByCategoryId(catId);
-            if (products.isEmpty()) {
-                System.out.println("❌ This category is empty. Cannot buy anything.");
+        // Lambda Usage: ifPresent
+        pOpt.ifPresentOrElse(product -> {
+            System.out.print("Enter Quantity: ");
+            int qty = Integer.parseInt(sc.nextLine());
+
+            // Domain Logic Validation
+            if (qty <= 0 || qty > product.getQuantity()) {
+                System.out.println("❌ Invalid quantity.");
                 return;
             }
 
-            // Print products so user sees the IDs
-            printProductList(products, "Pick a Product");
+            Map<Product, Integer> cart = new HashMap<>();
+            cart.put(product, qty);
 
-            // Step 3: Ask for Product ID
-            System.out.print("Step 2: Enter Product ID to buy (or 0 to exit): ");
-            Long prodId = Long.parseLong(sc.nextLine());
-
-            if (prodId == 0) return; // User cancelled
-
-            // Step 4: Validate Product
-            Optional<Product> productOptional = productRepository.findById(prodId);
-
-            if (productOptional.isEmpty()) {
-                System.out.println("❌ Error: Product ID #" + prodId + " does not exist!");
-                return;
+            try {
+                orderDAO.createOrder(currentUser, cart);
+                System.out.println("✅ Purchase successful!");
+            } catch (Exception e) {
+                System.out.println("Transaction failed: " + e.getMessage());
             }
 
-            Product product = productOptional.get();
-
-            // Step 5: Ask Quantity
-            System.out.print("Step 3: Enter quantity: ");
-            int amountToBuy = Integer.parseInt(sc.nextLine());
-
-            // Step 6: Process
-            processTransaction(product, amountToBuy);
-
-        } catch (NumberFormatException e) {
-            System.out.println("❌ Error: Please enter valid numbers only!");
-        }
-        // NOTE: The old code is DELETED from here. The method ends now.
+        }, () -> System.out.println("Product not found."));
     }
 
-    // --- LOGIC: TRANSACTION CALCULATOR ---
-    private void processTransaction(Product product, int amountToBuy) {
-        // 1. Check Stock
-        if (amountToBuy > product.getQuantity()) {
-            System.out.println("❌ Error: Not enough stock! We only have " + product.getQuantity() + " left.");
-            return;
-        }
-
-        // 2. Calculate Price
-        double totalPrice = product.getPrice() * amountToBuy;
-
-
-        // 4. Update Database
-        int newStock = product.getQuantity() - amountToBuy;
-        product.setQuantity(newStock);
-        productRepository.save(product);
-
-        // 5. Print Receipt
-        System.out.println("\n🧾 --- RECEIPT ---");
-        System.out.printf("Item: %s\n", product.getName());
-        System.out.printf("Qty:  %d\n", amountToBuy);
-
-        System.out.printf("TOTAL: %.2f ₸\n", totalPrice);
-        System.out.println("📦 Remaining Stock: " + newStock);
-        System.out.println("-------------------");
-    }
-
-    // --- HELPER METHODS ---
-    private void printCategoryList() {
-        List<Category> categories = categoryRepository.findAll();
-        for (Category c : categories) {
-            System.out.printf(" [%d] %s\n", c.getId(), c.getName());
-        }
-    }
-
-    private void printProductList(List<Product> products, String title) {
-        System.out.println("\n🛒 " + title + ":");
-        System.out.println("-----------------------------------------------------");
-        for (Product p : products) {
-            String catName = (p.getCategory() != null) ? p.getCategory().getName() : "Unknown";
-            System.out.printf("#%-2d | %-25s | %8.2f ₸ | Stock: %-3d\n",
-                    p.getId(), p.getName(), p.getPrice(), p.getQuantity());
-        }
-        System.out.println("-----------------------------------------------------");
+    private static void viewOrderDetails() {
+        System.out.print("Enter Order ID to inspect: ");
+        long oid = Long.parseLong(sc.nextLine());
+        orderDAO.getFullOrderDescription(oid);
     }
 }
